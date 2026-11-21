@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,8 @@ type Handler func(ctx context.Context, job *Job) error
 // WorkerOptions are how a worker claims and keeps its leases. What happens to a failed
 // message is the queue's business, so there is nothing about retries here.
 type WorkerOptions struct {
-	// Consumer is shown to administrators; the host name by default.
+	// Consumer is shown to administrators; host:pid by default, so the workers on
+	// one host are told apart.
 	Consumer string
 	// Route is the path this worker runs jobs through (a VPN exit, a proxy, an API account).
 	Route string
@@ -79,7 +81,7 @@ func NewWorker(client *Client, queue string, handler Handler, options WorkerOpti
 		options.ErrorPause = time.Second
 	}
 	if options.Consumer == "" {
-		options.Consumer, _ = os.Hostname()
+		options.Consumer = defaultConsumer()
 	}
 	return &Worker{client: client, queue: queue, handler: handler, options: options, logger: client.logger}
 }
@@ -266,4 +268,14 @@ func toString(v any) string {
 		return v
 	}
 	return slog.AnyValue(v).String()
+}
+
+// defaultConsumer is the host and the process, or empty when the host is unknown.
+func defaultConsumer() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return ""
+	}
+
+	return host + ":" + strconv.Itoa(os.Getpid())
 }
