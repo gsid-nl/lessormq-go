@@ -240,3 +240,31 @@ func TestTheKeyStaysOutOfTheString(t *testing.T) {
 		t.Error("key in String()")
 	}
 }
+
+func TestClaimBatchAndAckBatch(t *testing.T) {
+	f := newFake(t).
+		on("/v1/queues/mail/claims", ok(`{"items":[`+leaseJSON+`,`+strings.Replace(leaseJSON, `"r1"`, `"r2"`, 1)+`]}`), noContent()).
+		on("/v1/acks", ok(`{"items":[{"message":"m1","outcome":"acked"},{"message":"m1","outcome":"lease_lost"}]}`))
+	c := f.client()
+
+	leases, err := c.ClaimBatch(ctx, "mail", 10, ClaimOptions{WaitSeconds: 2})
+	if err != nil || len(leases) != 2 || leases[1].Receipt != "r2" || leases[0].Message.ID != "m1" {
+		t.Fatalf("leases %v, err %v", leases, err)
+	}
+	got, _ := json.Marshal(f.calls("/v1/queues/mail/claims")[0])
+	if string(got) != `{"max_messages":10,"wait_seconds":2}` {
+		t.Errorf("sent %s", got)
+	}
+	outcomes, err := c.AckBatch(ctx, leases)
+	if err != nil || len(outcomes) != 2 || outcomes[0] != Acked || outcomes[1] != AckLeaseLost {
+		t.Fatalf("outcomes %v, err %v", outcomes, err)
+	}
+	sent, _ := json.Marshal(f.calls("/v1/acks")[0])
+	if string(sent) != `{"leases":[{"message":"m1","receipt":"r1"},{"message":"m1","receipt":"r2"}]}` {
+		t.Errorf("sent %s", sent)
+	}
+	none, err := c.ClaimBatch(ctx, "mail", 10, ClaimOptions{})
+	if err != nil || len(none) != 0 {
+		t.Fatalf("empty claim: %v %v", none, err)
+	}
+}

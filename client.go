@@ -168,6 +168,19 @@ type ClaimOptions struct {
 // Cancelling ctx while a claim waits can leave a message leased on the server, which
 // then runs out and counts as an attempt; the Worker therefore lets claims finish.
 func (c *Client) Claim(ctx context.Context, queue string, opts ClaimOptions) (*Lease, error) {
+	payload := opts.payload()
+	var wire wireLease
+	// A claim whose answer got lost leaves a lease that simply expires and counts as an
+	// attempt, so claims are retried like the rest.
+	status, err := c.send(ctx, call{method: http.MethodPost, path: "/v1/queues/" + segment(queue) + "/claims",
+		payload: payload, repeatable: true, extra: time.Duration(max(opts.WaitSeconds, 0)) * time.Second}, &wire)
+	if err != nil || status == http.StatusNoContent {
+		return nil, err
+	}
+	return NewLease(wire.Receipt, wire.LeaseUntil, wire.Message), nil
+}
+
+func (opts ClaimOptions) payload() map[string]any {
 	payload := map[string]any{}
 	if opts.Consumer != "" {
 		payload["consumer"] = opts.Consumer
@@ -181,15 +194,69 @@ func (c *Client) Claim(ctx context.Context, queue string, opts ClaimOptions) (*L
 	if opts.LeaseSeconds > 0 {
 		payload["lease_seconds"] = opts.LeaseSeconds
 	}
-	var wire wireLease
-	// A claim whose answer got lost leaves a lease that simply expires and counts as an
-	// attempt, so claims are retried like the rest.
+	return payload
+}
+
+// ClaimBatch leases up to maxMessages (1 to 100) ready messages of a queue at once, oldest
+// first, each with a receipt of its own. It waits up to opts.WaitSeconds only while there
+// is none, and returns no leases when nothing became available. Report each lease as
+// usual, or ack them together with AckBatch.
+func (c *Client) ClaimBatch(ctx context.Context, queue string, maxMessages int, opts ClaimOptions) ([]*Lease, error) {
+	payload := opts.payload()
+	payload["max_messages"] = maxMessages
+	var wire struct {
+		Items []wireLease `json:"items"`
+	}
 	status, err := c.send(ctx, call{method: http.MethodPost, path: "/v1/queues/" + segment(queue) + "/claims",
 		payload: payload, repeatable: true, extra: time.Duration(max(opts.WaitSeconds, 0)) * time.Second}, &wire)
 	if err != nil || status == http.StatusNoContent {
 		return nil, err
 	}
-	return NewLease(wire.Receipt, wire.LeaseUntil, wire.Message), nil
+	leases := make([]*Lease, len(wire.Items))
+	for i, w := range wire.Items {
+		leases[i] = NewLease(w.Receipt, w.LeaseUntil, w.Message)
+	}
+	return leases, nil
+}
+
+// AckOutcome is what became of one lease of an AckBatch.
+type AckOutcome string
+
+const (
+	// Acked: the message is completed (also when this lease was acked before).
+	Acked AckOutcome = "acked"
+	// AckLeaseLost: the receipt is not the current lease; stop reporting on it.
+	AckLeaseLost AckOutcome = "lease_lost"
+	// AckNotFound: no such message.
+	AckNotFound AckOutcome = "not_found"
+	// AckForbidden: the key may not use the message's queue.
+	AckForbidden AckOutcome = "forbidden"
+)
+
+// AckBatch reports success for up to 100 leases in one request. The outcomes are in the
+// order of leases; one that cannot be acked does not hold up the others.
+func (c *Client) AckBatch(ctx context.Context, leases []*Lease) ([]AckOutcome, error) {
+	items := make([]map[string]string, len(leases))
+	for i, l := range leases {
+		items[i] = map[string]string{"message": l.Message.ID, "receipt": l.Receipt}
+	}
+	var answer struct {
+		Items []struct {
+			Outcome AckOutcome `json:"outcome"`
+		} `json:"items"`
+	}
+	if _, err := c.send(ctx, call{method: http.MethodPost, path: "/v1/acks",
+		payload: map[string]any{"leases": items}, repeatable: true}, &answer); err != nil {
+		return nil, err
+	}
+	out := make([]AckOutcome, len(leases))
+	for i := range out {
+		out[i] = AckNotFound
+		if i < len(answer.Items) {
+			out[i] = answer.Items[i].Outcome
+		}
+	}
+	return out, nil
 }
 
 // Extend moves the end of the lease to now plus leaseSeconds (0: the queue's lease).

@@ -41,6 +41,8 @@ type args struct {
 	Message      string            `json:"message"`
 	Receipt      string            `json:"receipt"`
 	Permanent    bool              `json:"permanent"`
+	MaxMessages  int               `json:"max_messages"`
+	Leases       []args            `json:"leases"`
 	Error        struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -135,15 +137,35 @@ func do(ctx context.Context, client *lessormq.Client, name string, a args) (resu
 		if err != nil || lease == nil {
 			return result{204, nil}, err
 		}
-		m := lease.Message
-		return result{200, map[string]any{
-			"receipt":     lease.Receipt,
-			"lease_until": format(lease.Until()),
-			"message": map[string]any{
-				"id": m.ID, "queue": m.Queue, "body": m.Body, "headers": m.Headers, "attempt": m.Attempt,
-				"max_attempts": m.MaxAttempts, "created_at": format(m.CreatedAt),
-			},
-		}}, nil
+		return result{200, leaseBody(lease)}, nil
+
+	case "claim_batch":
+		leases, err := client.ClaimBatch(ctx, a.Queue, a.MaxMessages, lessormq.ClaimOptions{
+			Consumer: a.Consumer, Route: a.Route, WaitSeconds: a.WaitSeconds, LeaseSeconds: a.LeaseSeconds,
+		})
+		if err != nil || len(leases) == 0 {
+			return result{204, nil}, err
+		}
+		items := make([]any, len(leases))
+		for i, l := range leases {
+			items[i] = leaseBody(l)
+		}
+		return result{200, map[string]any{"items": items}}, nil
+
+	case "ack_batch":
+		leases := make([]*lessormq.Lease, len(a.Leases))
+		for i, l := range a.Leases {
+			leases[i] = leaseOf(l)
+		}
+		outcomes, err := client.AckBatch(ctx, leases)
+		if err != nil {
+			return result{}, err
+		}
+		items := make([]any, len(a.Leases))
+		for i, l := range a.Leases {
+			items[i] = map[string]any{"message": l.Message, "outcome": outcomes[i]}
+		}
+		return result{200, map[string]any{"items": items}}, nil
 
 	case "extend":
 		lease := leaseOf(a)
@@ -178,6 +200,18 @@ func do(ctx context.Context, client *lessormq.Client, name string, a args) (resu
 
 // leaseOf is a lease as the scenario names it: the message id and the receipt, which may
 // be stale or someone else's on purpose.
+func leaseBody(lease *lessormq.Lease) map[string]any {
+	m := lease.Message
+	return map[string]any{
+		"receipt":     lease.Receipt,
+		"lease_until": format(lease.Until()),
+		"message": map[string]any{
+			"id": m.ID, "queue": m.Queue, "body": m.Body, "headers": m.Headers, "attempt": m.Attempt,
+			"max_attempts": m.MaxAttempts, "created_at": format(m.CreatedAt),
+		},
+	}
+}
+
 func leaseOf(a args) *lessormq.Lease {
 	return lessormq.NewLease(a.Receipt, time.Now(), &lessormq.Message{ID: a.Message})
 }

@@ -80,6 +80,11 @@ if err == nil && lease != nil {
 back without counting the attempt. All of them return an error matching `ErrLeaseLost`
 once the lease has ended: drop the message then, it is someone else's now.
 
+Many short jobs go faster in batches: `client.ClaimBatch(ctx, "mail", 50, opts)` leases up
+to 50 ready messages at once (each with its own lease), and `client.AckBatch(ctx, leases)`
+acks them in one request, with an outcome per lease (`Acked`, `AckLeaseLost`, ...). A
+message that fails is reported on its own with `Fail`.
+
 ## Errors
 
 The server's errors are `*lessormq.APIError` (with `Status`, `Code` and `Errors`) and
