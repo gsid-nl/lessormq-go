@@ -2,7 +2,9 @@
 
 Client and worker for [LessorMQ](https://lessormq.dev), the message queue over HTTP where
 the server decides and clients only claim, run, ack or fail. Standard library only:
-`net/http`, `context` and `log/slog`. Go 1.22+.
+`net/http`, `context` and `log/slog`. Go 1.22+. Module `github.com/gsid-nl/lessormq-go`.
+
+## Install
 
 ```sh
 go get github.com/gsid-nl/lessormq-go
@@ -11,11 +13,28 @@ go get github.com/gsid-nl/lessormq-go
 This module is published from `clients/go` in [gsid-nl/lessormq](https://github.com/gsid-nl/lessormq);
 issues and pull requests go there.
 
-## Publish
+## Connect
 
 ```go
 client := lessormq.New("https://mq.example.com", os.Getenv("LESSORMQ_KEY"))
+```
 
+The key is a tenant's API key with the scopes the program needs (`publish`, `consume`).
+Options, after the key:
+
+| Option | Default | |
+|---|---|---|
+| `WithTimeout(d)` | 10s | the deadline per request; a claim gets its wait on top |
+| `WithRetries(n)` | 3 | retries after a network error, a 5xx or a 429 |
+| `WithRetryDelay(d)` | 100ms | times the attempt number, or the server's `Retry-After` |
+| `WithHTTPClient(c)` | `http.DefaultClient` | proxies, TLS, transports; its own `Timeout` zero or above 30s |
+| `WithLogger(l)` | nothing logged | retries and a worker's troubles |
+| `WithoutAutoDedupKey()` | | a publish without a dedup key gets none, and is then never retried |
+| `WithUserAgent(ua)` | | |
+
+## Publish
+
+```go
 _, err := client.Publish(ctx, "mail", map[string]string{"to": "ada@example.com"}, nil)
 
 _, err = client.Publish(ctx, "invoices", Invoice{ID: 1042}, &lessormq.PublishOptions{
@@ -92,13 +111,18 @@ match with `errors.Is`: `ErrLeaseLost`, `ErrValidation`, `ErrUnauthorized`,
 `ErrForbidden`, `ErrNotFound`, `ErrConflict`, `ErrPayloadTooLarge`, `ErrRateLimited` and
 `ErrServer`. A server that cannot be reached gives a `*lessormq.TransportError`.
 
-Network errors, 5xx and 429 are retried (`WithRetries(3)`, `WithRetryDelay(100ms)` times
-the attempt, or the server's `Retry-After`). That is the only retrying the library does.
-`WithLogger(slog.Default())` shows the retries.
+Network errors, 5xx and 429 are retried (see [Connect](#connect)). That is the only
+retrying the library does.
 
-## Conformance
+## Development
 
-The library passes the LessorMQ conformance suite through `internal/conformance`:
+```sh
+cd clients/go
+go test -race ./...
+```
+
+The library passes the LessorMQ [conformance suite](https://github.com/gsid-nl/lessormq/tree/main/conformance)
+through `internal/conformance`, from the repository root:
 
 ```sh
 LESSORMQ_ADAPTER_CMD="cd clients/go && go run ./internal/conformance" conformance/run.sh
