@@ -27,13 +27,40 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// UserAgent is sent with every request unless WithUserAgent says otherwise.
-const UserAgent = "lessormq-go/1"
+// UserAgent is sent with every request unless WithUserAgent says otherwise: lessormq-go
+// and the version of this module the program was built with, such as lessormq-go/0.4.10.
+var UserAgent = "lessormq-go/" + moduleVersion()
+
+const modulePath = "github.com/gsid-nl/lessormq-go"
+
+// moduleVersion reads the version of this module from the program's build info: 0.4.10
+// as a dependency, dev when it is the main module (its own tests), a replace by a local
+// directory, or the info is missing.
+func moduleVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	for _, module := range append([]*debug.Module{&info.Main}, info.Deps...) {
+		if module.Path != modulePath {
+			continue
+		}
+		if module.Replace != nil {
+			module = module.Replace
+		}
+		if version := strings.TrimPrefix(module.Version, "v"); version != "" && version != "(devel)" {
+			return version
+		}
+		break
+	}
+	return "dev"
+}
 
 const (
 	maxErrorMessage = 65535
